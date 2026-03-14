@@ -5,16 +5,99 @@ This guide walks you through every portal-side action required to bring the four
 
 ---
 
-## Prerequisites Checklist
+## Phase 0: Pre-Flight — Purchases, Permissions & Local Setup
 
-Before starting, confirm you have:
+Complete everything in this section before touching the Azure Portal. Estimated time: 30–60 minutes (excluding Azure OpenAI approval wait).
 
-- [ ] **Azure subscription** with Owner or Contributor role
-- [ ] **Microsoft 365 Business Premium** (or equivalent) with SharePoint
-- [ ] **GitHub account** with access to `kdmcquire-creator/Peak10-enterprise-automation`
-- [ ] **Azure CLI installed** locally (`az --version` should return 2.50+)
-- [ ] **PowerShell 7+** with PnP.PowerShell module (`Install-Module PnP.PowerShell -Scope CurrentUser`)
-- [ ] **Plaid developer account** (https://dashboard.plaid.com/signup)
+### 0.1 — Licenses & Subscriptions Required
+
+| Requirement | What It Is | You Likely Have It? | Cost If Not |
+|---|---|---|---|
+| **Azure Subscription** | Pay-as-you-go or Enterprise Agreement | Yes, if Peak 10 uses M365 | ~$200-400/mo for this workload on dev |
+| **Microsoft 365 Business Premium** | Includes SharePoint, Outlook, Power Automate | Almost certainly yes | $22/user/mo |
+| **GitHub account** | Free tier works for private repos | Yes (`kdmcquire-creator`) | Free |
+
+**No additional software purchases are required.** All Azure services are pay-as-you-go and Plaid sandbox is free.
+
+### 0.2 — Azure Service Costs (Dev Environment)
+
+These services are provisioned automatically by the Bicep templates but incur charges:
+
+| Service | Pillar | Dev Cost Estimate | Notes |
+|---|---|---|---|
+| 4x Azure Functions (Consumption/Y1) | All | **Free** | 1M executions/mo included in free grant |
+| 4x Storage Accounts | All | **~$1/mo total** | Minimal usage |
+| 4x Application Insights | All | **Free** | 5GB/mo included |
+| 4x Key Vaults | All | **~$1/mo total** | Standard tier |
+| Azure OpenAI Service | 2 | **~$5-50/mo** | GPT-4o at ~$5/1M input tokens; depends on email volume |
+| Azure AI Document Intelligence | 3 | **~$1-10/mo** | S0 tier, per-page pricing |
+| Azure SQL Database (Basic) | 4 | **~$5/mo** | TDE-encrypted for Chinese Wall |
+| **Total dev environment** | | **~$15-70/mo** | Scales with usage |
+
+Production costs increase when Function Apps move from Consumption (Y1) to Basic (B1) at ~$55/mo each, and SQL moves to Standard (S1) at ~$15/mo.
+
+### 0.3 — External Service Sign-Ups
+
+| Service | Action | Free Tier? | Time to Activate |
+|---|---|---|---|
+| **Plaid** | Create account at https://dashboard.plaid.com/signup | Sandbox: **free**. Development: 100 live items free. Production: $500+/mo | Immediate |
+| **Azure OpenAI** | May need to request access (see blocker check below) | Free to enable; pay per token | 1-5 business days if not already enabled |
+
+#### Potential Blocker: Azure OpenAI Access
+
+Not all Azure subscriptions have Azure OpenAI enabled by default. **Check this now:**
+
+1. Go to **Azure Portal → search "Azure OpenAI"**
+2. If you see a **"Create"** button → you're good, skip ahead
+3. If you see **"Request Access"** → submit the form at https://aka.ms/oai/access
+4. Approval takes **1-5 business days**
+
+**If blocked:** Pillars 1 and 4 have zero dependency on Azure OpenAI. Deploy and use them immediately while waiting. Pillars 2 and 3 will run in rule-based-only mode (no AI fallback) until access is granted.
+
+### 0.4 — Permissions You Need
+
+Confirm you hold (or can get) these roles before starting:
+
+| Permission | Where to Check | Why You Need It |
+|---|---|---|
+| **Owner** or **Contributor** | Azure Portal → Subscriptions → your sub → Access control (IAM) | Deploy resources, create service principals |
+| **Application Administrator** (or Global Admin) | Azure Portal → Microsoft Entra ID → Roles and administrators | Create the service principal in Step 1.2 |
+| **SharePoint Administrator** | Microsoft 365 Admin Center → Roles | Run the SharePoint provisioning script, create sites |
+| **Power Automate Environment Maker** | Power Platform Admin Center → Environments | Create the Outlook → triage flow in Phase 4 |
+| **GitHub Repository Admin** | GitHub → Settings → Collaborators | Set repository secrets for CI/CD |
+
+If you are the CEO and the M365 Global Admin, you already have all of these. If IT manages your tenant, ask them to confirm these roles are assigned to your account before proceeding.
+
+### 0.5 — Software to Install Locally
+
+Install these on whatever machine you'll run the deployment commands from (your laptop, or use Azure Cloud Shell which has Azure CLI and PowerShell pre-installed):
+
+| Tool | Install Instructions | Required For |
+|---|---|---|
+| **Azure CLI 2.50+** | macOS: `brew install azure-cli` · Windows: `winget install Microsoft.AzureCLI` · All: https://aka.ms/installazurecli | All Bicep deployments (Phases 2-5) |
+| **Azure Functions Core Tools v4** | macOS: `brew install azure-functions-core-tools@4` · Windows: `winget install Microsoft.Azure.FunctionsCoreTools` · All: https://learn.microsoft.com/en-us/azure/azure-functions/functions-run-local | `func azure functionapp publish` commands |
+| **PowerShell 7+** | macOS: `brew install powershell` · Windows: Built-in (run `pwsh` to verify) · All: https://github.com/PowerShell/PowerShell/releases | SharePoint provisioning script (Phase 3) |
+| **PnP.PowerShell module** | Inside PowerShell 7: `Install-Module PnP.PowerShell -Scope CurrentUser` | SharePoint folder hierarchy creation |
+| **Python 3.11+** *(optional)* | https://www.python.org/downloads/ | Local testing only; not required for deployment |
+
+**Shortcut — Azure Cloud Shell:** If you don't want to install anything locally, open https://shell.azure.com in your browser. It has Azure CLI, PowerShell 7, and Python pre-installed. You'll only need to run `Install-Module PnP.PowerShell` inside Cloud Shell.
+
+### 0.6 — Pre-Flight Checklist
+
+Run through this before starting Phase 1:
+
+- [ ] Azure subscription is active and you can log into https://portal.azure.com
+- [ ] You have Owner or Contributor role on the subscription
+- [ ] M365 tenant is active with SharePoint and Outlook
+- [ ] Azure OpenAI access is confirmed (or request submitted — note the date: _______)
+- [ ] Plaid developer account created at https://dashboard.plaid.com
+- [ ] Azure CLI installed (`az --version` returns 2.50+)
+- [ ] Azure Functions Core Tools installed (`func --version` returns 4.x)
+- [ ] PowerShell 7 installed (`pwsh --version` returns 7.x)
+- [ ] PnP.PowerShell module installed (`Get-Module PnP.PowerShell -ListAvailable` shows a version)
+- [ ] GitHub repo access confirmed (can push to `kdmcquire-creator/Peak10-enterprise-automation`)
+
+Once all boxes are checked, proceed to Phase 1.
 
 ---
 
