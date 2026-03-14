@@ -1,6 +1,6 @@
 // Peak 10 Energy — Email Intelligence Infrastructure
 // Deploys: Function App, Storage, App Insights, Key Vault,
-//          Azure OpenAI Service for email triage & drafting
+//          Azure OpenAI Service, Cosmos DB, Document Intelligence
 
 @description('Azure region')
 param location string = resourceGroup().location
@@ -16,6 +16,8 @@ var appInsightsName = 'ai-${suffix}'
 var appServicePlanName = 'plan-${suffix}'
 var keyVaultName = 'kv-${suffix}'
 var openAIName = 'oai-${suffix}'
+var cosmosName = 'cosmos-${suffix}'
+var docIntelName = 'di-${suffix}'
 
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: storageName
@@ -68,6 +70,99 @@ resource openAI 'Microsoft.CognitiveServices/accounts@2023-10-01-preview' = {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Cosmos DB — persistence for triage results, drafts, documents, corrections
+// ---------------------------------------------------------------------------
+
+resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2023-11-15' = {
+  name: cosmosName
+  location: location
+  kind: 'GlobalDocumentDB'
+  properties: {
+    databaseAccountOfferType: 'Standard'
+    consistencyPolicy: { defaultConsistencyLevel: 'Session' }
+    locations: [
+      { locationName: location, failoverPriority: 0 }
+    ]
+    capabilities: environment == 'dev' ? [
+      { name: 'EnableServerless' }
+    ] : []
+  }
+}
+
+resource cosmosDatabase 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2023-11-15' = {
+  parent: cosmosAccount
+  name: 'peak10-email-intelligence'
+  properties: {
+    resource: { id: 'peak10-email-intelligence' }
+  }
+}
+
+resource triageContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2023-11-15' = {
+  parent: cosmosDatabase
+  name: 'triage_results'
+  properties: {
+    resource: {
+      id: 'triage_results'
+      partitionKey: { paths: ['/partition_date'], kind: 'Hash' }
+      defaultTtl: 7776000 // 90 days
+    }
+  }
+}
+
+resource draftsContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2023-11-15' = {
+  parent: cosmosDatabase
+  name: 'draft_responses'
+  properties: {
+    resource: {
+      id: 'draft_responses'
+      partitionKey: { paths: ['/message_id'], kind: 'Hash' }
+      defaultTtl: 2592000 // 30 days
+    }
+  }
+}
+
+resource documentsContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2023-11-15' = {
+  parent: cosmosDatabase
+  name: 'documents'
+  properties: {
+    resource: {
+      id: 'documents'
+      partitionKey: { paths: ['/document_id'], kind: 'Hash' }
+    }
+  }
+}
+
+resource correctionsContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2023-11-15' = {
+  parent: cosmosDatabase
+  name: 'corrections'
+  properties: {
+    resource: {
+      id: 'corrections'
+      partitionKey: { paths: ['/original_type'], kind: 'Hash' }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Document Intelligence (Form Recognizer)
+// ---------------------------------------------------------------------------
+
+resource docIntelligence 'Microsoft.CognitiveServices/accounts@2023-10-01-preview' = {
+  name: docIntelName
+  location: location
+  sku: { name: 'S0' }
+  kind: 'FormRecognizer'
+  properties: {
+    publicNetworkAccess: 'Enabled'
+    customSubDomainName: docIntelName
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Function App
+// ---------------------------------------------------------------------------
+
 resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
   name: functionAppName
   location: location
@@ -88,6 +183,8 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
         { name: 'KEY_VAULT_URI', value: keyVault.properties.vaultUri }
         { name: 'AZURE_OPENAI_ENDPOINT', value: openAI.properties.endpoint }
+        { name: 'COSMOS_CONNECTION_STRING', value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=cosmos-connection-string)' }
+        { name: 'AZURE_DI_ENDPOINT', value: docIntelligence.properties.endpoint }
         { name: 'ENVIRONMENT', value: environment }
       ]
     }
@@ -107,3 +204,5 @@ resource kvRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' =
 output functionAppName string = functionApp.name
 output functionAppUrl string = 'https://${functionApp.properties.defaultHostName}'
 output openAIEndpoint string = openAI.properties.endpoint
+output cosmosEndpoint string = cosmosAccount.properties.documentEndpoint
+output docIntelligenceEndpoint string = docIntelligence.properties.endpoint
