@@ -1,0 +1,360 @@
+openapi: "3.1.0"
+info:
+  title: Peak 10 Energy — AFA Engine API
+  description: |
+    Automated Financial Allocation Engine.
+    Pillar 1 of the Peak 10 Enterprise Automation platform.
+
+    Executes a deterministic 4-pass AP payment allocation algorithm
+    against dynamic budget constraints.
+  version: "1.0.0"
+  contact:
+    name: Peak 10 Energy
+servers:
+  - url: https://{functionApp}.azurewebsites.net/api
+    description: Azure Functions (production)
+    variables:
+      functionApp:
+        default: peak10-afa-engine
+  - url: http://localhost:7071/api
+    description: Local development
+
+paths:
+  /allocations/run:
+    post:
+      operationId: runAllocation
+      summary: Execute a new allocation run
+      description: |
+        Accepts a budget constraint and a list of invoices, then executes
+        the 4-pass deterministic allocation algorithm. Returns the full
+        allocation result with line items, deferrals, and pass summaries.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AllocationRunRequest"
+      responses:
+        "200":
+          description: Allocation completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AllocationRunResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /allocations/approve:
+    post:
+      operationId: approveAllocation
+      summary: Approve a pending allocation run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run_id]
+              properties:
+                run_id:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Allocation approved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  run_id:
+                    type: string
+                  status:
+                    type: string
+        "404":
+          description: Run not found
+        "409":
+          description: Run not in pending_approval state
+
+  /allocations/export:
+    post:
+      operationId: exportAllocation
+      summary: Export approved allocation as ACH records
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExportRequest"
+      responses:
+        "200":
+          description: ACH export generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportResponse"
+        "409":
+          description: Run not approved
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      responses:
+        "200":
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  service:
+                    type: string
+                  version:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+
+components:
+  schemas:
+    AllocationRunRequest:
+      type: object
+      required: [budget, invoices]
+      properties:
+        budget:
+          $ref: "#/components/schemas/BudgetConstraint"
+        invoices:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Invoice"
+
+    BudgetConstraint:
+      type: object
+      required: [total_budget]
+      properties:
+        total_budget:
+          type: string
+          description: Total AP budget for this cycle (decimal string)
+          example: "500000.00"
+        reserved_amount:
+          type: string
+          description: Amount held back from allocation
+          default: "0.00"
+          example: "25000.00"
+
+    Invoice:
+      type: object
+      required: [vendor_id, vendor_priority, amount_due, due_date]
+      properties:
+        invoice_id:
+          type: string
+          format: uuid
+        vendor_id:
+          type: string
+        vendor_name:
+          type: string
+        vendor_priority:
+          type: integer
+          enum: [1, 2, 3, 4]
+          description: "1=Critical, 2=High, 3=Standard, 4=Deferrable"
+        amount_due:
+          type: string
+          example: "15000.00"
+        amount_allocated:
+          type: string
+          default: "0.00"
+        due_date:
+          type: string
+          format: date
+        description:
+          type: string
+        status:
+          type: string
+          enum: [pending, allocated, partially_allocated, deferred, approved, exported]
+          default: pending
+        source:
+          type: string
+          enum: [manual, pillar4_expense]
+          default: manual
+          description: Origin — manual entry or pushed from Pillar 4 expense hub
+
+    AllocationLineItem:
+      type: object
+      properties:
+        invoice_id:
+          type: string
+        vendor_id:
+          type: string
+        vendor_name:
+          type: string
+        vendor_priority:
+          type: integer
+        invoice_amount:
+          type: string
+        allocated_amount:
+          type: string
+        allocation_pass:
+          type: integer
+          description: "Which pass allocated this (1-4)"
+        is_partial:
+          type: boolean
+        notes:
+          type: string
+
+    AllocationRunResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        allocation:
+          type: object
+          properties:
+            run_id:
+              type: string
+              format: uuid
+            status:
+              type: string
+            budget:
+              $ref: "#/components/schemas/BudgetConstraint"
+            total_allocated:
+              type: string
+            total_deferred:
+              type: string
+            budget_remaining:
+              type: string
+            utilization_pct:
+              type: string
+            line_items:
+              type: array
+              items:
+                $ref: "#/components/schemas/AllocationLineItem"
+            deferred_items:
+              type: array
+              items:
+                $ref: "#/components/schemas/AllocationLineItem"
+            pass_summaries:
+              type: array
+              items:
+                type: object
+            created_at:
+              type: string
+              format: date-time
+
+    ExportRequest:
+      type: object
+      required: [run_id, vendors]
+      properties:
+        run_id:
+          type: string
+          format: uuid
+        vendors:
+          type: array
+          items:
+            type: object
+            required: [vendor_id, name, priority, ach_routing_number, ach_account_number]
+            properties:
+              vendor_id:
+                type: string
+              name:
+                type: string
+              priority:
+                type: integer
+              ach_routing_number:
+                type: string
+              ach_account_number:
+                type: string
+
+    ExportResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        run_id:
+          type: string
+        ach_records:
+          type: array
+          items:
+            type: object
+        nacha_flat:
+          type: string
+          description: Simplified NACHA flat-file text for bank upload
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        error:
+          type: string
+
+    # -----------------------------------------------------------------
+    # Inter-Pillar Integration Contracts
+    # -----------------------------------------------------------------
+
+    Pillar4ExpenseClaim:
+      description: |
+        Contract for expenses pushed FROM Pillar 4 (Employee Expense Hub)
+        INTO the AFA Engine AP queue. Only sanitized claim records cross
+        the Chinese Wall boundary.
+      type: object
+      required: [vendor_id, vendor_name, amount_due, due_date, receipt_ref]
+      properties:
+        vendor_id:
+          type: string
+          description: Vendor ID (e.g., the employee or merchant)
+        vendor_name:
+          type: string
+        amount_due:
+          type: string
+        due_date:
+          type: string
+          format: date
+        description:
+          type: string
+        receipt_ref:
+          type: string
+          description: Reference to receipt document in SharePoint (Pillar 3)
+        source:
+          type: string
+          enum: [pillar4_expense]
+          default: pillar4_expense
+
+    Pillar3DocumentFilingRequest:
+      description: |
+        Contract for payment schedules pushed FROM the AFA Engine
+        TO Pillar 3 (Document AI) for auto-naming and filing.
+      type: object
+      required: [document_type, document_name, content_url, metadata]
+      properties:
+        document_type:
+          type: string
+          enum: [payment_schedule, ach_export]
+        document_name:
+          type: string
+          description: Suggested standardized filename
+          example: "2026-03-14_AP_PaymentSchedule_Run-abc123.pdf"
+        content_url:
+          type: string
+          description: Blob storage URL of the generated document
+        metadata:
+          type: object
+          properties:
+            run_id:
+              type: string
+            total_allocated:
+              type: string
+            vendor_count:
+              type: integer
+            created_at:
+              type: string
+              format: date-time
