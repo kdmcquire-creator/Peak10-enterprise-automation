@@ -1,0 +1,331 @@
+openapi: "3.1.0"
+info:
+  title: Peak 10 Energy — Document AI API
+  description: |
+    Universal Data Governance & Document AI system.
+    Pillar 3 of the Peak 10 Enterprise Automation platform.
+
+    Classifies documents, generates standardized names, and recommends
+    filing locations within the governed SharePoint hierarchy.
+  version: "1.0.0"
+servers:
+  - url: https://{functionApp}.azurewebsites.net/api
+    variables:
+      functionApp:
+        default: peak10-document-ai
+  - url: http://localhost:7072/api
+    description: Local development
+
+paths:
+  /documents/stage:
+    post:
+      operationId: stageDocument
+      summary: Stage a new document for classification
+      description: |
+        Accepts documents from any source: direct upload, email attachment
+        (from Pillar 2), payment schedule (from Pillar 1), or expense
+        receipt (from Pillar 4).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StageRequest"
+      responses:
+        "201":
+          description: Document staged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StageResponse"
+
+  /documents/classify:
+    post:
+      operationId: classifyDocument
+      summary: Classify a staged document
+      description: |
+        Runs the two-tier classification pipeline (rules → AI) and
+        returns both the classification result and a filing recommendation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClassifyRequest"
+      responses:
+        "200":
+          description: Classification complete
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClassifyResponse"
+
+  /documents/file:
+    post:
+      operationId: fileDocument
+      summary: Confirm filing of a classified document
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [document_id]
+              properties:
+                document_id:
+                  type: string
+                confirmed_path:
+                  type: string
+                  description: Override the recommended path
+                confirmed_name:
+                  type: string
+                  description: Override the standardized name
+      responses:
+        "200":
+          description: Document filed
+
+  /documents/correct:
+    post:
+      operationId: correctClassification
+      summary: Log a user correction to classification
+      description: |
+        Records user overrides for the continuous learning loop.
+        Corrections feed the RAG knowledge base, not model fine-tuning.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CorrectionRequest"
+      responses:
+        "200":
+          description: Correction logged
+
+  /documents/{document_id}:
+    get:
+      operationId: getDocument
+      summary: Get document status and classification
+      parameters:
+        - name: document_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Document details
+        "404":
+          description: Not found
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      responses:
+        "200":
+          description: Service healthy
+
+components:
+  schemas:
+    StageRequest:
+      type: object
+      required: [filename]
+      properties:
+        filename:
+          type: string
+        source:
+          type: string
+          enum: [upload, email, pillar1, pillar4]
+          default: upload
+        source_detail:
+          type: string
+          description: E.g., email subject line or Pillar 1 run_id
+        file_size_bytes:
+          type: integer
+        content_hash:
+          type: string
+
+    StageResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        document:
+          $ref: "#/components/schemas/StagedDocument"
+
+    ClassifyRequest:
+      type: object
+      required: [filename]
+      properties:
+        document_id:
+          type: string
+        filename:
+          type: string
+        content_text:
+          type: string
+          description: Extracted text from the document (for AI classification)
+        ai_response:
+          type: object
+          description: Pre-computed AI classification (if available)
+
+    ClassifyResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        classification:
+          $ref: "#/components/schemas/ClassificationResult"
+        filing:
+          $ref: "#/components/schemas/FilingRecommendation"
+        needs_ai_classification:
+          type: boolean
+          description: True if rule-based confidence was low and AI should be called
+        ai_prompt:
+          type: string
+          description: The prompt to send to Azure OpenAI (only if needs_ai_classification)
+
+    CorrectionRequest:
+      type: object
+      required: [document_id, corrected_type]
+      properties:
+        document_id:
+          type: string
+        corrected_type:
+          type: string
+          description: The correct document type
+        corrected_path:
+          type: string
+          description: The correct filing path
+        notes:
+          type: string
+
+    StagedDocument:
+      type: object
+      properties:
+        document_id:
+          type: string
+        original_filename:
+          type: string
+        file_extension:
+          type: string
+        source:
+          type: string
+        source_detail:
+          type: string
+        staged_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending, classified, filed, error]
+        classification:
+          $ref: "#/components/schemas/ClassificationResult"
+        filing:
+          $ref: "#/components/schemas/FilingRecommendation"
+
+    ClassificationResult:
+      type: object
+      properties:
+        document_type:
+          type: string
+        confidence:
+          type: number
+        confidence_level:
+          type: string
+          enum: [high, medium, low]
+        metadata:
+          $ref: "#/components/schemas/ExtractedMetadata"
+        reasoning:
+          type: string
+
+    FilingRecommendation:
+      type: object
+      properties:
+        recommended_path:
+          type: string
+          description: "E.g., 01_CORPORATE/Finance/AP"
+        standardized_name:
+          type: string
+          description: "E.g., 2026-03-14_Invoice_Halliburton_INV-2026-0412.pdf"
+        document_type:
+          type: string
+        confidence_level:
+          type: string
+        requires_review:
+          type: boolean
+        alternative_paths:
+          type: array
+          items:
+            type: string
+
+    ExtractedMetadata:
+      type: object
+      properties:
+        vendor_name:
+          type: string
+        counterparty:
+          type: string
+        effective_date:
+          type: string
+        expiration_date:
+          type: string
+        amount:
+          type: string
+        well_name:
+          type: string
+        lease_name:
+          type: string
+        county:
+          type: string
+        state:
+          type: string
+        reference_number:
+          type: string
+
+    # -----------------------------------------------------------------
+    # Inter-Pillar Integration Contracts
+    # -----------------------------------------------------------------
+
+    Pillar1FilingRequest:
+      description: |
+        Contract for payment schedules/ACH exports pushed FROM Pillar 1
+        INTO the Document AI staging queue for auto-naming and filing.
+      type: object
+      required: [document_type, document_name, content_url, metadata]
+      properties:
+        document_type:
+          type: string
+          enum: [payment_schedule, ach_export]
+        document_name:
+          type: string
+        content_url:
+          type: string
+        metadata:
+          type: object
+          properties:
+            run_id:
+              type: string
+            total_allocated:
+              type: string
+            vendor_count:
+              type: integer
+
+    Pillar2EmailAttachment:
+      description: |
+        Contract for email attachments routed FROM Pillar 2 (Email
+        Intelligence) INTO the Document AI staging queue.
+      type: object
+      required: [filename, email_subject, sender]
+      properties:
+        filename:
+          type: string
+        email_subject:
+          type: string
+        sender:
+          type: string
+        received_at:
+          type: string
+          format: date-time
+        attachment_url:
+          type: string
+          description: Blob storage URL of the extracted attachment
