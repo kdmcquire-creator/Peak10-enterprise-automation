@@ -1,0 +1,55 @@
+name: "Pillar 4 — Expense Hub CI"
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "pillar4-expense-hub/**"
+      - ".github/workflows/pillar4-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "pillar4-expense-hub/**"
+
+defaults:
+  run:
+    working-directory: pillar4-expense-hub
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt pytest pytest-cov
+      - run: python -m pytest tests/ -v --tb=short --cov=expense_hub --cov-report=term-missing
+
+  deploy-dev:
+    name: Deploy to Dev
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - uses: azure/login@v2
+        with: { creds: "${{ secrets.AZURE_CREDENTIALS }}" }
+      - uses: Azure/functions-action@v1
+        with:
+          app-name: func-peak10expdev
+          package: pillar4-expense-hub
+          scm-do-build-during-deployment: true
+          enable-oryx-build: true
