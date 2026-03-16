@@ -1,0 +1,55 @@
+name: "Pillar 2 — Email Intelligence CI"
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "pillar2-email-intelligence/**"
+      - ".github/workflows/pillar2-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "pillar2-email-intelligence/**"
+
+defaults:
+  run:
+    working-directory: pillar2-email-intelligence
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt pytest pytest-cov
+      - run: python -m pytest tests/ -v --tb=short --cov=email_intel --cov-report=term-missing
+
+  deploy-dev:
+    name: Deploy to Dev
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - uses: azure/login@v2
+        with: { creds: "${{ secrets.AZURE_CREDENTIALS }}" }
+      - uses: Azure/functions-action@v1
+        with:
+          app-name: func-peak10emaildev
+          package: pillar2-email-intelligence
+          scm-do-build-during-deployment: true
+          enable-oryx-build: true
